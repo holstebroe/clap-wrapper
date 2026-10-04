@@ -115,6 +115,8 @@ class ProcessAdapter
     int16_t key;      // 0..127
   };
   std::vector<ActiveNote> _activeNotes;
+  // The held note with this id, or nullptr (always for id -1, "no id").
+  const ActiveNote *findActiveNote(int32_t note_id) const;
 
   std::unique_ptr<clap_audio_buffer_t[]> _input_ports;
   std::unique_ptr<clap_audio_buffer_t[]> _output_ports;
