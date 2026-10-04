@@ -747,6 +747,24 @@ bool ProcessAdapter::enqueueOutputEvent(const clap_event_header_t *event)
       return true;
       break;
     case CLAP_EVENT_NOTE_EXPRESSION:
+    {
+      // VST3 has an output event for pressure only; the other expressions
+      // need the note expression controller and are dropped as before.
+      auto nevt = reinterpret_cast<const clap_event_note_expression *>(event);
+      if (nevt->expression_id == CLAP_NOTE_EXPRESSION_PRESSURE && nevt->key >= 0 && nevt->key <= 127)
+      {
+        Steinberg::Vst::Event oe{};
+        oe.type = Steinberg::Vst::Event::kPolyPressureEvent;
+        oe.polyPressure.channel = nevt->channel < 0 ? 0 : nevt->channel;
+        oe.polyPressure.pitch = nevt->key;
+        oe.polyPressure.pressure = static_cast<float>(nevt->value);
+        oe.polyPressure.noteId = nevt->note_id;
+        oe.busIndex = 0;  // FIXME - multi-out midi still needs work
+        oe.sampleOffset = nevt->header.time;
+
+        if (_vstdata && _vstdata->outputEvents) _vstdata->outputEvents->addEvent(oe);
+      }
+    }
       return true;
       break;
     case CLAP_EVENT_PARAM_VALUE:
@@ -825,6 +843,55 @@ bool ProcessAdapter::enqueueOutputEvent(const clap_event_header_t *event)
       break;
 
     case CLAP_EVENT_MIDI:
+    {
+      // MIDI 1.0 messages that have a VST3 event of their own go out as that
+      // event, like their CLAP counterparts above: note on/off and poly
+      // pressure. Other messages (CC, channel pressure, pitch bend) have no
+      // general VST3 output event and are dropped as before (#414).
+      auto mevt = reinterpret_cast<const clap_event_midi *>(event);
+      const uint8_t status = mevt->data[0] & 0xF0;
+      const int16_t channel = mevt->data[0] & 0x0F;
+      const int16_t key = mevt->data[1] & 0x7F;
+      const uint8_t value = mevt->data[2] & 0x7F;
+
+      Steinberg::Vst::Event oe{};
+      oe.busIndex = 0;  // FIXME - multi-out midi still needs work
+      oe.sampleOffset = mevt->header.time;
+      if (status == 0x90 && value > 0)
+      {
+        oe.type = Steinberg::Vst::Event::kNoteOnEvent;
+        oe.noteOn.channel = channel;
+        oe.noteOn.pitch = key;
+        oe.noteOn.velocity = value / 127.f;
+        oe.noteOn.length = 0;
+        oe.noteOn.tuning = 0.0f;
+        oe.noteOn.noteId = -1;
+      }
+      else if (status == 0x80 || status == 0x90)
+      {
+        oe.type = Steinberg::Vst::Event::kNoteOffEvent;
+        oe.noteOff.channel = channel;
+        oe.noteOff.pitch = key;
+        oe.noteOff.velocity = status == 0x80 ? value / 127.f : 0.f;
+        oe.noteOff.tuning = 0.0f;
+        oe.noteOff.noteId = -1;
+      }
+      else if (status == 0xA0)
+      {
+        oe.type = Steinberg::Vst::Event::kPolyPressureEvent;
+        oe.polyPressure.channel = channel;
+        oe.polyPressure.pitch = key;
+        oe.polyPressure.pressure = value / 127.f;
+        oe.polyPressure.noteId = -1;
+      }
+      else
+      {
+        return true;
+      }
+      if (_vstdata && _vstdata->outputEvents) _vstdata->outputEvents->addEvent(oe);
+    }
+      return true;
+      break;
     case CLAP_EVENT_MIDI_SYSEX:
     case CLAP_EVENT_MIDI2:
       return true;
